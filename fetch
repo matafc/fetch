@@ -1,0 +1,112 @@
+#!/usr/local/bin/python
+import requests
+import os
+from urllib.parse import urlparse
+from bs4 import BeautifulSoup
+from datetime import datetime
+
+
+def metadata_string(site, num_links, num_images, fetch_date):
+    return (f"\nsite: {site}\n" 
+            f"num_links: {num_links}\n"
+            f"images: {num_images}\n"
+            f"last_fetch: {fetch_date}\n")
+
+def get_links(page_content):
+    links = set()
+    soup = BeautifulSoup(page_content, 'html.parser')
+    for link in soup.find_all('a', href=True):
+        links.add(link['href'])
+    return links
+
+def get_images(page_content):
+    images = set()
+    soup = BeautifulSoup(page_content, 'html.parser')
+    img_tags = soup.find_all('img')
+    for img in img_tags:
+        images.add(img['src'])
+    return images
+
+def download_page(site_name, response):
+    # TODO: we should really download this somewhere else instead of the curr dir
+    site_text = response.text
+
+    for image_url in get_images(response.content):
+        local_image_url = download_image(image_url, site_name, response.url)
+        site_text = site_text.replace(image_url, local_image_url)
+    
+    # TODO: we should do this for other assets, like ico and js. Also not all images are have img tags, will need to find them differently.
+
+    dirname = os.path.dirname(site_name)
+    if dirname and not os.path.exists(dirname):
+        os.makedirs(dirname)
+
+    with open(site_name + '.html', 'w') as d:
+        d.write(site_text)
+
+def download_image(image_url, site_name, site_url):
+    try:
+        assets_dir = os.path.join(site_name.strip('/'), 'assets')
+
+        # TODO: handle more bad formats of links
+        if not image_url.startswith("http"):
+            source_url = site_url + image_url
+            image_path = os.path.join(assets_dir, image_url.strip('/'))
+        else:
+            parsed = urlparse(image_url)
+            source_url = image_url
+            image_path = os.path.join(assets_dir, f"{parsed.netloc}{parsed.path}")
+        
+        image_dir = os.path.dirname(image_path)
+
+        if image_dir and not os.path.exists(image_dir):
+            os.makedirs(image_dir)
+
+        response = requests.get(source_url)
+        if response.status_code == 200:
+            with open(image_path, 'wb') as f:
+                f.write(response.content)
+        return image_path
+
+    except Exception as e:
+        print(f"Error saving image {image_url} as {source_url} for {site_name}: {e}")
+    
+
+def fetch_sites(pages, metadata):
+    for page in pages:
+        try:
+            response = requests.get(page)
+            if response.status_code != 200:
+                raise Exception(f"Could not process {page}: Status code was {response.status_code}")
+            if metadata:
+                parsed = urlparse(page)
+                site_name = f"{parsed.netloc}{parsed.path}".strip('/')
+                images = get_images(response.content)
+                links = get_links(response.content)
+                # TODO: this is executing as 'naive' timezone(UTC), may need to tweak later
+                # TODO: Could this be the time the site was last downloaded instead? Could get file creation date instead, ask later
+                time_now = datetime.now().strftime("%a %b %d %Y %I:%M UTC")
+                print(
+                    metadata_string(
+                        site_name,
+                        len(links),
+                        len(images),
+                        time_now
+                    )
+                )
+            download_page(site_name, response)
+        except Exception as e:
+            print(f"Error when fetching {page}: {e}")
+     
+
+if __name__ == "__main__":
+    import sys
+    METADATA_ARG = "--metadata"
+
+    # TODO: use argparser library
+    args = sys.argv[1:]
+    metadata = METADATA_ARG in args
+    if metadata:
+        args.remove(METADATA_ARG)
+
+    fetch_sites(args, metadata)
